@@ -1,65 +1,120 @@
-# Cellular Automata
+# cellular-automata
 
-**A Rust library for generic 2D cellular automaton simulation** — supports arbitrary cell types, custom rules, and both Moore (8-neighbor) and Von Neumann (4-neighbor) neighborhoods. Ships with Conway's Game of Life as a built-in rule.
+A generic, parameterizable 2D **cellular automaton** library in Rust supporting arbitrary cell types, user-defined transition rules, and both Moore and von Neumann neighborhoods. Ships with Conway's Game of Life as a built-in rule.
 
 ## Why It Matters
 
-Cellular automata (CA) are discrete computational models where simple local rules produce complex global behavior. Each cell updates based on its neighbors, creating emergent patterns. This library generalizes beyond Game of Life to support *any* rule function and *any* cell type.
+Unlike fixed-purpose automaton simulators, this crate provides a **generic framework** where:
 
-Cellular automata have practical applications in:
-- **Simulation** — traffic flow (Nagel-Schreckenberg), forest fire spread, epidemic modeling
-- **Image processing** — cellular smoothing, erosion/dilation morphology
-- **Procedural generation** — cave generation (using CA for dungeon walls), terrain textures
-- **Physics** — lattice gas automata for fluid dynamics, Ising model for magnetism
+- Cell type `T` is user-defined (bool, enum, integer, custom struct)
+- The transition function `RuleFn<T>` is any `fn(&[Option<T>], &T) -> T`
+- The neighborhood geometry is selectable (Moore = 8 neighbors, von Neumann = 4)
 
-The library's generic design means you can simulate boolean CAs (Game of Life, Wireworld), integer CAs (predator-prey, reaction-diffusion), or any custom state space.
+This generality supports:
+
+- **Multi-state automata** — cyclic cellular automata, rock-paper-scissors models
+- **Continuous CAs** — reaction-diffusion (Gray-Scott) with `f64` cells
+- **Lattice models** — Ising model spin dynamics with `i8` cells
+- **Ecological models** — predator-prey cellular automata with agent-type cells
 
 ## How It Works
 
-**Generic design**: `Automaton<T>` is parameterized over cell type `T: Clone + Default + PartialEq`. The rule is a function pointer `fn(&[Option<T>], &T) -> T` — it receives the neighbor values (as `Option`, with `None` for out-of-bounds) and the current cell value, returning the next cell value.
+### Generic Grid Architecture
 
-**Neighborhoods**:
-- **Moore**: 8 surrounding cells (up/down/left/right + 4 diagonals). Standard for Game of Life.
-- **Von Neumann**: 4 cardinal neighbors (up/down/left/right only). Used in lattice gas models.
+```rust
+pub struct Automaton<T: Clone> {
+    grid: Vec<Vec<T>>,
+    rule: RuleFn<T>,
+    neighborhood: Neighborhood,
+}
+```
 
-**Simulation**: `step()` creates a copy of the grid, then applies the rule to every cell using the old grid's neighbor values. This synchronous update is essential — cells must all see the same state. `step_n(n)` runs n generations.
+The grid is a dense `Vec<Vec<T>>` (row-major). Each step clones the grid (double-buffered update) and applies the rule:
 
-**Built-in Conway rule**: `conway_rule` implements the standard Game of Life: live cells with 2–3 neighbors survive, dead cells with exactly 3 neighbors are born.
+$$S_{t+1}(x, y) = f\big(\{S_t(n_i)\}_{\text{neighbors}}, S_t(x,y)\big)$$
+
+### Neighborhoods
+
+| Neighborhood | Cells | Offsets |
+|-------------|-------|---------|
+| **Moore** | 8 | (±1,±1), (0,±1), (±1,0) |
+| **von Neumann** | 4 | (0,±1), (±1,0) |
+
+Moore is standard for Life-like CAs. Von Neumann is used in lattice gas automata and some epidemiological models (SIR with nearest-neighbor contact).
+
+### Conway's Rule (Built-in)
+
+```rust
+pub fn conway_rule(neighbors: &[Option<bool>], current: &bool) -> bool {
+    let alive = neighbors.iter().filter(|n| n.unwrap_or(false)).count();
+    match (current, alive) {
+        (true, 2) | (true, 3) => true,   // survival
+        (false, 3) => true,               // birth
+        _ => false,                       // death/stasis
+    }
+}
+```
+
+### Complexity Analysis
+
+| Operation | Time | Space |
+|-----------|------|-------|
+| `set(x, y, v)` | O(1) | O(1) |
+| `get(x, y)` | O(1) | O(1) |
+| `step()` | O(W × H × |N|) | O(W × H) |
+| `step_n(n)` | O(n × W × H × |N|) | O(W × H) |
+
+Where |N| is the neighborhood size (8 for Moore, 4 for von Neumann).
+
+The dominant cost is the grid clone + full scan. For a W×H grid with Moore neighborhood, each step performs W×H×8 neighbor lookups plus W×H rule evaluations.
+
+### Boundary Handling
+
+Out-of-bounds neighbors return `None`, which the rule function handles explicitly. This is equivalent to a **fixed (dead) boundary** for boolean CAs.
 
 ## Quick Start
 
 ```rust
 use cellular_automata::{Automaton, Neighborhood, conway_rule};
 
-let mut auto = Automaton::new(10, 10, conway_rule, Neighborhood::Moore);
+let mut auto = Automaton::new(5, 5, conway_rule, Neighborhood::Moore);
 
-// Set up a blinker (vertical line → oscillates to horizontal)
-auto.set(5, 4, true);
-auto.set(5, 5, true);
-auto.set(5, 6, true);
+// Place a blinker (vertical line → oscillates to horizontal)
+auto.set(2, 1, true);
+auto.set(2, 2, true);
+auto.set(2, 3, true);
 
-// Step one generation
-auto.step();
-
-// The blinker should now be horizontal
-assert_eq!(*auto.get(4, 5).unwrap(), true);
-assert_eq!(*auto.get(6, 5).unwrap(), true);
+auto.step(); // becomes horizontal
+assert!(auto.get(1, 2));
+assert!(auto.get(3, 2));
+auto.step(); // back to vertical
+assert!(auto.get(2, 1));
 ```
 
 ## API
 
-- **`Automaton<T>`** — Generic CA grid
-  - `new(width, height, rule, neighborhood)` — Initialize with a rule function
-  - `set(x, y, value)` / `get(x, y)` — Cell access
-  - `step()` — Advance one generation
-  - `step_n(n)` — Advance n generations
-  - `count_alive()` — Count non-default cells
-- **`Neighborhood`** — Enum: `Moore` (8 neighbors), `VonNeumann` (4 neighbors)
-- **`conway_rule(neighbors, current)` → `bool`** — Built-in Conway's Game of Life rule
+| Type / Method | Description |
+|---------------|-------------|
+| `Automaton::new(w, h, rule, neighborhood)` | Generic constructor |
+| `set(x, y, value)` | Set cell state |
+| `get(x, y) → Option<&T>` | Read cell state |
+| `step()` | One synchronous generation |
+| `step_n(n)` | Advance n generations |
+| `count_alive()` | Count non-default cells |
+| `conway_rule` | Built-in Game of Life rule |
+| `Neighborhood::Moore` / `VonNeumann` | Geometry selector |
 
 ## Architecture Notes
 
-Provides the simulation framework for SuperInstance computational experiments. The generic rule design enables rapid prototyping of custom cellular automata for any domain. See the [architecture overview](https://github.com/SuperInstance/SuperInstance/blob/main/ARCHITECTURE.md).
+The **γ + η = C** link: the neighborhood collection (γ) gathers the local context for each cell, while the user-supplied rule function (η) applies the deterministic transition. Together they conserve the synchronicity invariant C — all cells in generation $t+1$ are computed from the snapshot of generation $t$ (via the clone before the update loop), ensuring no information propagates within a single step. This is the mathematical definition of a CA map $F: S^T \to S^T$ applied uniformly.
+
+## References
+
+- von Neumann, J. (1966). *Theory of Self-Reproducing Automata.* University of Illinois Press.
+- Wolfram, S. (1984). *Universality and Complexity in Cellular Automata.* Physica D, 10(1–2), 1–35.
+- Cook, M. (2004). *Universality in Elementary Cellular Automata.* Complex Systems, 15(1), 1–40. (Rule 110 is Turing-complete.)
+- Gardner, M. (1970). *The Fantastic Combinations of John Conway's New Solitaire Game "Life."* Scientific American.
+- Toffoli, T., & Margolus, N. (1987). *Cellular Automata Machines.* MIT Press.
 
 ## License
 
